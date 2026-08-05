@@ -4,8 +4,17 @@ import { enqueueMessage, templates } from './queue.js';
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 let lastQrByUser = {}; // stockage temporaire en mémoire — remplace par Redis/DB en prod
+
+app.get('/', (req, res) => res.json({ status: 'ok', message: 'whatsapp-notifier actif' }));
 
 /**
  * 1) Connexion d'un utilisateur de ta plateforme à son compte WhatsApp.
