@@ -13,7 +13,11 @@ const AUTH_DIR = path.resolve('./sessions');
 export async function startAllSessions() {
   if (!fs.existsSync(AUTH_DIR)) return;
 
+  // Le volume monté par Railway (ext4) crée automatiquement un dossier
+  // "lost+found" à sa racine — jamais un vrai userId, à ignorer.
   const userIds = fs.readdirSync(AUTH_DIR).filter((f) =>
+    f !== 'lost+found' &&
+    !f.startsWith('.') &&
     fs.statSync(path.join(AUTH_DIR, f)).isDirectory()
   );
 
