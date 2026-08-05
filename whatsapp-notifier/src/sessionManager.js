@@ -1,10 +1,8 @@
-import baileysPkg from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import path from 'path';
 import fs from 'fs';
-
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = baileysPkg;
 
 // Une session = un compte WhatsApp connecté = un utilisateur de ta plateforme.
 // On garde toutes les sessions actives en mémoire, indexées par userId.
