@@ -1,5 +1,5 @@
 import express from 'express';
-import { startSession, isConnected } from './sessionManager.js';
+import { startSession, isConnected, endSession } from './sessionManager.js';
 import { enqueueMessage, templates } from './queue.js';
 import { startAllSessions } from './sessionStore.js';
 import {
@@ -93,6 +93,23 @@ app.get('/qr/:userId', (req, res) => {
   const qr = lastQrByUser[req.params.userId];
   if (!qr) return res.status(404).json({ message: 'Pas de QR en attente (déjà connecté ?)' });
   res.json({ qr });
+});
+
+/**
+ * Déconnecte complètement le compte : délie l'appareil côté WhatsApp et
+ * efface la session en base. Après ça, /connect/:userId génère un nouveau
+ * QR à scanner — utile pour repartir d'un état propre (ex. après des
+ * erreurs "Bad MAC" persistantes) sans avoir à toucher à la base à la main.
+ */
+app.post('/disconnect/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    await endSession(userId);
+    delete lastQrByUser[userId];
+    res.json({ message: 'Session supprimée. Un nouveau /connect/:userId générera un nouveau QR.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /**
