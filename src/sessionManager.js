@@ -1,7 +1,7 @@
 import { makeWASocket, DisconnectReason } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
-import { useDBAuthState } from './dbAuthState.js';
+import { useDBAuthState, clearAuthState } from './dbAuthState.js';
 import { pool } from './db.js';
 
 // Une session = un compte WhatsApp connecté = un utilisateur de ta plateforme.
@@ -143,6 +143,33 @@ async function demarrerSessionInterne(userId, { onQr, onStatus } = {}) {
 
 export function getSession(userId) {
   return sessions.get(userId);
+}
+
+/**
+ * Déconnecte complètement un compte : délie l'appareil côté WhatsApp
+ * (sock.logout() — équivalent à le supprimer soi-même depuis le téléphone
+ * dans "Appareils liés", pas besoin de le faire à la main), puis efface
+ * toute trace de la session en base. Le compte repart à zéro : un nouveau
+ * /connect/:userId générera un nouveau QR à scanner.
+ */
+export async function endSession(userId) {
+  const sock = sessions.get(userId);
+  if (sock) {
+    try {
+      await sock.logout();
+    } catch (e) {
+      console.error(`[${userId}] Erreur lors du logout WhatsApp (on continue quand même) :`, e.message);
+    }
+    try {
+      sock.ev.removeAllListeners();
+      sock.end?.(new Error('Session supprimée depuis l\'admin'));
+    } catch (e) {
+      // rien de plus à faire, le socket est de toute façon abandonné ci-dessous
+    }
+  }
+  sessions.delete(userId);
+  connectionOpen.delete(userId);
+  await clearAuthState(pool, userId);
 }
 
 /**
