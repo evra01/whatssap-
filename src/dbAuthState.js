@@ -91,3 +91,15 @@ export async function listStoredUserIds(pool) {
   );
   return res.rows.map((r) => r.user_id);
 }
+
+/**
+ * Supprime toutes les données de session (identifiants + clés de chiffrement)
+ * d'un utilisateur — repart de zéro, comme si le compte n'avait jamais été
+ * connecté. Utilisé pour "déconnecter" un compte WhatsApp depuis l'admin
+ * (voir endSession() dans sessionManager.js, qui appelle aussi
+ * sock.logout() avant ça pour délier proprement l'appareil côté WhatsApp).
+ */
+export async function clearAuthState(pool, userId) {
+  await ensureTable(pool);
+  await pool.query('DELETE FROM wa_auth_state WHERE user_id=$1', [userId]);
+}
