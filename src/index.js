@@ -68,6 +68,14 @@ app.post('/config/:userId', async (req, res) => {
 app.post('/connect/:userId', async (req, res) => {
   const { userId } = req.params;
 
+  // Si déjà connecté, on ne relance rien : startSession() gère maintenant
+  // proprement les appels en double (ferme l'ancienne session avant d'en
+  // ouvrir une nouvelle), mais autant éviter une reconnexion inutile —
+  // c'est aussi ce qui causait les erreurs "Bad MAC" avant ce correctif.
+  if (isConnected(userId)) {
+    return res.json({ message: 'Déjà connecté.', alreadyConnected: true });
+  }
+
   await startSession(userId, {
     onQr: (uid, qr) => {
       lastQrByUser[uid] = qr;
