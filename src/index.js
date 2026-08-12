@@ -168,6 +168,26 @@ app.post('/webhook/candidature-maitre', async (req, res) => {
   res.json({ message: 'Message mis en file d\'attente' });
 });
 
+/**
+ * 6) Webhook générique : texte déjà composé côté serveur principal (pas de
+ * template ici). Utilisé pour dupliquer automatiquement en WhatsApp TOUTE
+ * notification "programmée" du serveur principal (paiement, séance à venir,
+ * demande de matières/disponibilités, absence signalée, etc.) — voir
+ * envoyerNotificationTemplate() dans server.js, qui appelle ce webhook avec
+ * exactement le même texte que la notification push correspondante.
+ */
+app.post('/webhook/notification', async (req, res) => {
+  const { userId, telephoneClient, text } = req.body;
+
+  if (!userId || !telephoneClient || !text) {
+    return res.status(400).json({ error: 'userId, telephoneClient et text sont requis' });
+  }
+
+  await enqueueMessage({ userId, phoneNumber: telephoneClient, text });
+
+  res.json({ message: 'Message mis en file d\'attente' });
+});
+
 const PORT = process.env.PORT || 3000;
 startAllSessions()
   .catch((e) => {
