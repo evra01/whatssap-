@@ -48,6 +48,60 @@ export function isStable(userId) {
 // de déchiffrement en boucle. Une seule connexion à la fois, point.
 const startLocks = new Map();
 
+/* ---- Verrou Postgres inter-processus (pg_advisory_lock) ----
+   startLocks (ci-dessus) empêche deux connexions en parallèle DANS le même
+   processus Node. Mais un connectionReplaced (statusCode 440) prouve qu'un
+   AUTRE processus (l'ancienne instance Render pas encore éteinte pendant un
+   redéploiement, un test lancé en local en parallèle de la prod, un service
+   dupliqué...) tenait la même session au même moment — startLocks ne peut
+   rien contre ça, il ne voit pas les autres processus.
+   pg_advisory_lock résout ça au niveau de la base : un seul processus au
+   monde peut tenir le verrou pour un userId donné. Le verrou est tenu par
+   une connexion Postgres dédiée (pas via le pool, qui recycle ses clients) :
+   tant que cette connexion reste ouverte, personne d'autre ne peut
+   l'acquérir — et si le processus crashe brutalement, Postgres libère le
+   verrou tout seul à la coupure de la connexion (pas de verrou "collé"
+   après un crash). */
+const lockClients = new Map(); // userId -> client pg dédié tenant le verrou
+
+function lockKeyForUser(userId) {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) hash = (hash * 31 + userId.charCodeAt(i)) | 0;
+  return hash;
+}
+
+async function acquireSessionLock(userId) {
+  if (lockClients.has(userId)) return true; // déjà tenu par ce processus
+  const client = await pool.connect();
+  const key = lockKeyForUser(userId);
+  try {
+    const res = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [key]);
+    if (res.rows[0].locked) {
+      lockClients.set(userId, client);
+      return true;
+    }
+    client.release();
+    return false;
+  } catch (e) {
+    client.release();
+    throw e;
+  }
+}
+
+async function releaseSessionLock(userId) {
+  const client = lockClients.get(userId);
+  if (!client) return;
+  try {
+    await client.query('SELECT pg_advisory_unlock($1)', [lockKeyForUser(userId)]);
+  } catch (e) {
+    // Rien de plus à faire — si la requête échoue, le verrou tombera de
+    // toute façon quand ce client sera relâché/fermé.
+  } finally {
+    client.release();
+    lockClients.delete(userId);
+  }
+}
+
 /**
  * Ferme proprement un socket existant (s'il y en a un) pour cet utilisateur,
  * avant qu'un nouveau ne soit créé. Ne déclenche jamais la reconnexion
@@ -89,6 +143,21 @@ export async function startSession(userId, { onQr, onStatus } = {}) {
 
 async function demarrerSessionInterne(userId, { onQr, onStatus } = {}) {
   await fermerSessionExistante(userId);
+
+  const gotLock = await acquireSessionLock(userId);
+  if (!gotLock) {
+    // Un autre processus tient déjà cette session (chevauchement de
+    // déploiement Render, test en local en parallèle, etc.) — se connecter
+    // quand même provoquerait exactement le connectionReplaced observé.
+    // On patiente et on retente, plutôt que de rentrer en conflit.
+    console.error(
+      `[${userId}] Verrou de session déjà tenu par un autre processus — ` +
+      `nouvelle tentative dans 20s (vérifie qu'une seule instance du service tourne).`
+    );
+    onStatus?.(userId, 'lock_held_elsewhere');
+    setTimeout(() => { startSession(userId, { onQr, onStatus }); }, 20000);
+    return null;
+  }
 
   // Le nouveau socket n'est pas encore ouvert : tant que 'connection.update'
   // n'a pas signalé "open", on ne doit pas considérer l'utilisateur comme
@@ -166,10 +235,16 @@ async function demarrerSessionInterne(userId, { onQr, onStatus } = {}) {
       if (shouldReconnect) {
         // Reconnexion automatique — Baileys se déconnecte régulièrement,
         // c'est normal, il faut toujours relancer sauf déconnexion explicite (logout).
+        // On garde le verrou pg (même processus, pas besoin de le relâcher
+        // puis le reprendre à chaque coupure transitoire).
         startSession(userId, { onQr, onStatus });
       } else {
         sessions.delete(userId);
         connectionOpen.delete(userId);
+        // Arrêt réel (logout, ou conflit avec un autre processus qui a
+        // gagné entre-temps) : on libère le verrou, quelqu'un d'autre
+        // (ou une reconnexion manuelle plus tard) pourra le reprendre.
+        releaseSessionLock(userId);
       }
     }
   });
@@ -236,6 +311,7 @@ export async function endSession(userId) {
   sessions.delete(userId);
   connectionOpen.delete(userId);
   await clearAuthState(pool, userId);
+  await releaseSessionLock(userId);
 }
 
 /**
@@ -265,3 +341,15 @@ export async function sendMessage(userId, phoneNumber, text) {
   const result = await sock.sendMessage(jid, { text });
   console.log(`[${userId}] envoyé au socket, id=${result?.key?.id || '?'} vers ${jid} — en attente d'accusé de réception.`);
 }
+
+// À l'arrêt du processus (redéploiement Render, redémarrage manuel), on
+// libère tout de suite les verrous pg tenus par ce processus — sinon la
+// prochaine instance doit attendre que Postgres détecte tout seul la
+// coupure de connexion (généralement rapide, mais autant ne pas laisser de
+// fenêtre où le nouveau déploiement se croit bloqué pour rien).
+async function releaseAllLocksOnShutdown() {
+  const userIds = Array.from(lockClients.keys());
+  await Promise.all(userIds.map((id) => releaseSessionLock(id)));
+}
+process.on('SIGTERM', () => { releaseAllLocksOnShutdown().finally(() => process.exit(0)); });
+process.on('SIGINT', () => { releaseAllLocksOnShutdown().finally(() => process.exit(0)); });
