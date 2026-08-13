@@ -1,4 +1,4 @@
-import { sendMessage, isConnected } from './sessionManager.js';
+import { sendMessage, isConnected, isStable } from './sessionManager.js';
 import { canSendToday, incrementTodayCount } from './rateLimit.js';
 import { pool } from './db.js';
 
@@ -89,6 +89,17 @@ export async function processQueue() {
       const peutEnvoyer = await canSendToday();
       if (!peutEnvoyer) {
         console.log("→ Plafond quotidien WhatsApp atteint, message(s) en attente jusqu'à demain.");
+        break;
+      }
+
+      if (isConnected(job.user_id) && !isStable(job.user_id)) {
+        // Connecté mais pas encore stable (juste après une (re)connexion,
+        // surtout après un connectionReplaced) : les envois dans cette
+        // fenêtre partent dans le vide ou sont rejetés par WhatsApp. On ne
+        // consomme pas une tentative pour ça — on s'arrête juste pour ce
+        // passage, le rappel périodique (30s) ou le prochain enqueueMessage
+        // reprendra une fois la connexion stabilisée.
+        console.log(`→ Session ${job.user_id} connectée mais pas encore stable, message(s) en attente.`);
         break;
       }
 
