@@ -153,12 +153,26 @@ async function demarrerSessionInterne(userId, { onQr, onStatus } = {}) {
   // (numéro invalide/pas sur WhatsApp, serveur WA qui rejette après coup...).
   // On logge ces échecs pour qu'ils soient visibles dans les logs Render,
   // même si le code appelant ne peut rien faire de plus à ce stade.
+  // Suivi des accusés de réception WhatsApp : sendMessage() peut résoudre
+  // "avec succès" côté code sans que le message soit réellement délivré
+  // (numéro invalide/pas sur WhatsApp, serveur WA qui rejette après coup...).
+  // IMPORTANT : le statut "erreur" du protocole Baileys (proto
+  // WebMessageInfoStatus) vaut 0 (ERROR), jamais -1 — l'ancien code testait
+  // -1 et ne s'est donc JAMAIS déclenché sur un vrai échec, ce qui expliquait
+  // des envois silencieusement perdus sans aucune trace dans les logs.
+  // PENDING=1, SERVER_ACK=2, DELIVERY_ACK=3, READ=4, PLAYED=5.
   sock.ev.on('messages.update', (updates) => {
     for (const u of updates) {
-      if (u.update?.status === -1) {
+      const status = u.update?.status;
+      if (status === undefined) continue;
+      if (status === 0) {
         console.error(
           `⚠️  Message ${u.key?.id || '?'} vers ${u.key?.remoteJid || '?'} rejeté par WhatsApp après envoi (numéro invalide, pas sur WhatsApp, ou blocage anti-spam).`
         );
+      } else {
+        // Log de visibilité (SERVER_ACK=2 est déjà un signe que ça part
+        // réellement côté serveur WhatsApp, pas juste "accepté localement").
+        console.log(`[${userId}] accusé de réception message ${u.key?.id || '?'} : statut=${status}`);
       }
     }
   });
@@ -222,5 +236,6 @@ export async function sendMessage(userId, phoneNumber, text) {
   // n'atteindrait jamais personne.
   const numeroPropre = String(phoneNumber).replace(/[^\d]/g, '');
   const jid = `${numeroPropre}@s.whatsapp.net`;
-  await sock.sendMessage(jid, { text });
+  const result = await sock.sendMessage(jid, { text });
+  console.log(`[${userId}] envoyé au socket, id=${result?.key?.id || '?'} vers ${jid} — en attente d'accusé de réception.`);
 }
