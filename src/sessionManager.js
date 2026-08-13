@@ -106,10 +106,36 @@ async function demarrerSessionInterne(userId, { onQr, onStatus } = {}) {
       // ne jamais laisser un message partir sur ce socket mourant.
       connectionOpen.set(userId, false);
 
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      // Toujours logguer la vraie raison renvoyée par WhatsApp/Baileys — sans
+      // ça, un logged_out final est impossible à diagnostiquer après coup
+      // (on ne sait pas s'il vient d'un vrai logout depuis le téléphone ou
+      // d'un enchaînement d'erreurs qui y a mené).
+      console.error(
+        `[${userId}] connection close — statusCode=${statusCode ?? '?'} ` +
+        `(${Object.keys(DisconnectReason).find((k) => DisconnectReason[k] === statusCode) || 'inconnu'}) ` +
+        `message=${lastDisconnect?.error?.message || '?'}`
+      );
 
-      onStatus?.(userId, shouldReconnect ? 'reconnecting' : 'logged_out');
+      // connectionReplaced (440) = une AUTRE session vient de prendre la main
+      // sur ces mêmes identifiants (deux instances actives en parallèle, ex.
+      // pendant un redéploiement Render qui chevauche brièvement l'ancienne
+      // et la nouvelle instance, ou un double /connect). Se reconnecter
+      // automatiquement dans ce cas relance la bagarre entre les deux
+      // sessions, corrompt le chiffrement, et finit typiquement par un vrai
+      // logged_out de WhatsApp (exactement le symptôme observé). On
+      // n'auto-reconnecte donc PAS dans ce cas — il faut d'abord s'assurer
+      // qu'une seule instance du service tourne, puis relancer /connect à la main.
+      const shouldReconnect =
+        statusCode !== DisconnectReason.loggedOut &&
+        statusCode !== DisconnectReason.connectionReplaced;
+
+      onStatus?.(
+        userId,
+        statusCode === DisconnectReason.connectionReplaced
+          ? 'connection_replaced'
+          : (shouldReconnect ? 'reconnecting' : 'logged_out')
+      );
 
       if (shouldReconnect) {
         // Reconnexion automatique — Baileys se déconnecte régulièrement,
